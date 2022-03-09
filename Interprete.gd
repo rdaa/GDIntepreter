@@ -580,6 +580,5 @@ func run(fn, text):
 	var context = Context.new('<program>')
 	var result = interpreter.visit(ast.node, context)
 	
-	
-	
+
 	return [result.value, result.error]
