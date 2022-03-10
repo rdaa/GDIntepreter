@@ -1,6 +1,7 @@
 extends Node
 
-#expr   : term ((PLUS|MINUS) term)*
+#expr   : KEYWORD:VAR IDENTIFIER EQ expr
+#		: term ((PLUS|MINUS) term)*
 
 #term   : factor ((MUL|DIV) factor)*
 
@@ -9,5 +10,5 @@ extends Node
 
 #power  : atom (POW factor)*
 
-#atom   : INT|FLOAT
+#atom   : INT|FLOAT|IDENTIFIER
 #		: LPAREN expr RPAREN

@@ -1,12 +1,18 @@
 extends Node
 
+var global_symbol_table = SymbolTable.new()
+
+func _ready():
+	global_symbol_table.set("null", Number.new(0))
+
+
 #################################
 # CONSTANTS
 #################################
 
 const DIGITS = '0123456789'
-#const LETTERS = string.ascii_letters
-#const LETTERS_DIGITS = LETTERS + DIGITS
+const LETTERS = 'abcdefghijklmnñopqrstuvwxyzABCDEFGHIJKLMNÑOPQRSTUVWXYZ'
+const LETTERS_DIGITS = LETTERS + DIGITS
 
 ########################################
 # ERRORS
@@ -133,6 +139,9 @@ class Token:
 		
 		if _pos_end:
 			self.pos_end = _pos_end.copy()
+			
+	func matches(_type, _value):
+		return self.type == _type and self.value == _value
 
 	func _to_string():
 		if self.value: return str(self.type) + ":" + str(self.value)
@@ -169,6 +178,8 @@ class Lexer:
 				self.advance()
 			elif self.current_char in DIGITS:
 				tokens.append(self.make_number())
+			elif self.current_char in LETTERS:
+				tokens.append(self.make_identifier())
 			elif self.current_char == '+':
 				tokens.append(Token.new(TT_PLUS,null, self.pos))
 				self.advance()
@@ -189,6 +200,9 @@ class Lexer:
 				self.advance()
 			elif self.current_char == '^':
 				tokens.append(Token.new(TT_POW, null, self.pos))
+				self.advance()
+			elif self.current_char == '=':
+				tokens.append(Token.new(TT_EQ, null, self.pos))
 				self.advance()
 			else:
 				var pos_start = self.pos.copy()
@@ -217,7 +231,21 @@ class Lexer:
 			return Token.new(TT_INT, int(num_str), pos_start, self.pos)
 		else:
 			return Token.new(TT_FLOAT, float(num_str), pos_start, self.pos)
-
+			
+	func make_identifier():
+		var id_str = ''
+		var pos_start = self.pos.copy()
+		var tok_type
+		
+		while self.current_char != null and self.current_char in LETTERS_DIGITS + '_':
+			id_str += self.current_char
+			self.advance()
+			
+		if id_str in KEYWORDS:
+			tok_type = TT_KEYWORD 
+		else:
+			tok_type = TT_IDENTIFIER
+		return Token.new(tok_type, id_str, pos_start, self.pos)
 
 ########################################
 # NODES
@@ -236,6 +264,35 @@ class NumberNode:
 		
 	func _to_string():
 		return str(self.tok)
+
+
+class VarAccessNode:
+	var var_name_tok
+	var pos_start
+	var pos_end
+	var type = "VarAccessNode"
+	
+	func _init(_var_name_tok):
+		self.var_name_tok = _var_name_tok
+		self.pos_start = self.var_name_tok.pos_start
+		self.pos_end = self.var_name_tok.pos_end
+
+
+class VarAssignNode:
+	var var_name_tok
+	var value_node
+	var pos_start
+	var pos_end
+	var type = "VarAssignNode"
+	
+	func _init(_var_name_tok, _value_node):
+		self.var_name_tok = _var_name_tok
+		self.value_node = _value_node
+		
+		self.pos_start = self.var_name_tok.pos_start
+		self.pos_end = self.var_name_tok.pos_end
+		
+
 
 class BinOpNode:
 	var left_node
@@ -270,6 +327,8 @@ class UnaryOpNode:
 		
 	func _to_string():
 		return "(" + str(self.op_tok) + ", " + str(self.node) + ")"
+		
+
 		
 ########################################
 # PARSE RESULT
@@ -336,6 +395,10 @@ class Parser:
 			res.register(self.advance())
 			return res.success(NumberNode.new(tok))
 			
+		elif tok.type == TT_IDENTIFIER:
+			res.register(self.advance())
+			return res.success(VarAccessNode.new(tok))
+			
 		elif tok.type == TT_LPAREN:
 			res.register(self.advance())
 			var expr = res.register(self.expr())
@@ -345,11 +408,12 @@ class Parser:
 				res.register(self.advance())
 				return res.success(expr)
 			else:
-				return res.failure(InvalidSyntaxError.new(self.tok.pos_start, 
-			self.tok.pos_end,"", "Expected )"))
+				return res.failure(InvalidSyntaxError.new(tok.pos_start, 
+			tok.pos_end,"", "Expected )"))
 		
-		return res.failure(InvalidSyntaxError.new(self.tok.pos_start, 
-			self.tok.pos_end,"", "int, float, '+', '-' or '('"))
+		
+		return res.failure(InvalidSyntaxError.new(tok.pos_start, 
+			tok.pos_end,"", "int, float, '+', '-' or '('"))
 
 	func power():
 		return self.bin_op("atom", [TT_POW])
@@ -374,6 +438,31 @@ class Parser:
 		return self.bin_op("factor", [TT_MUL, TT_DIV])
 	
 	func expr():
+		var res = ParseResult.new()
+		if self.current_tok.matches(TT_KEYWORD, 'VAR'):
+			res.register(self.advance())
+			
+			if self.current_tok.type != TT_IDENTIFIER:
+				return res.failure(InvalidSyntaxError.new(
+					self.current_tok.pos_start, self.current_tok.pos_end, 
+					"", "Expected identifier"
+				))
+			
+			var var_name = self.current_tok
+			res.register(self.advance())
+			
+			if self.current_tok.type != TT_EQ:
+				return res.failure(InvalidSyntaxError.new(
+					self.current_tok.pos_start, self.current_tok.pos_end, 
+					"", "Expected ="
+				))
+			
+			res.register(self.advance())
+			var expr = res.register(self.expr())
+			if res.error:
+				return res
+			return res.success(VarAssignNode.new(var_name, expr))
+			
 		return self.bin_op("term", [TT_PLUS, TT_MINUS])
 		
 	func bin_op(function, ops):
@@ -478,12 +567,37 @@ class Context:
 	var display_name
 	var parent
 	var parent_entry_pos
+	var symbol_table
 	
 	func _init(_display_name, _parent = null, _parent_entry_pos = null):
 		self.display_name = _display_name
 		self.parent = _parent
 		self.parent_entry_pos = _parent_entry_pos
-		
+		self.symbol_table = null
+
+########################################
+# SYMBOL TABLE
+########################################
+
+class SymbolTable:
+	var symbols = {}
+	var parent
+	func _init():
+		parent = null
+	
+	#Buscamos la variable en la tabla, si no la encontramos la buscamos
+	#en el padre (La tabla no tiene padre)
+	func get(_name):
+		var value = self.symbols.get(_name, null)
+		if value == null and self.parent:
+			return self.parent.get(_name)
+		return value
+	
+	func set(_name, _value):
+		self.symbols[_name] = _value
+
+	func remove(_name):
+		self.symbols.erase(_name)
 ########################################
 # INTERPRETER
 ########################################
@@ -510,7 +624,28 @@ class Interpreter:
 		return RTResult.new().success(
 			Number.new(node.tok.value).set_context(_context).set_pos(node.pos_start, node.pos_end)
 		)
+	
+	func visit_VarAccessNode(node, context):
+		var res = RTResult.new()
+		var var_name = node.var_name_tok.value
+		var value = context.symbol_table.get(var_name)
 		
+		if not value:
+			return res.failure(RTError.new(
+				node.pos_start, node.pos_end,
+				"", "'" + str(var_name) + "' is not defined", context
+			))
+		return res.success(value)
+		
+	func visit_VarAssignNode(node, context):
+		var res = RTResult.new()
+		var var_name = node.var_name_tok.value
+		var value = res.register(self.visit(node.value_node, context))
+		if res.error: return res
+		
+		context.symbol_table.set(var_name, value)
+		return res.success(value)
+	
 	func visit_BinOpNode(node, _context):
 		var result_error_list
 		
@@ -578,6 +713,7 @@ func run(fn, text):
 	#Run program
 	var interpreter = Interpreter.new()
 	var context = Context.new('<program>')
+	context.symbol_table = global_symbol_table
 	var result = interpreter.visit(ast.node, context)
 	
 
