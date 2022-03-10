@@ -337,24 +337,29 @@ class UnaryOpNode:
 class ParseResult:
 	var error
 	var node
+	var advance_count
 	
 	func _init():
 		self.error = null
 		self.node = null
-		
+		self.advance_count = 0
+
 	func register(res):
-		if is_instance_valid(res) and res is ParseResult:
-			if res.error: self.error = res.error
-			return res.node
-			
-		return res
+		self.advance_count += res.advance_count
+		if res.error: self.error = res.error
+		return res.node
+	
+	func register_advancement():
+		self.advance_count += 1
+
 		
 	func success(_node):
 		self.node = _node
 		return self
 	
 	func failure(_error):
-		self.error = _error
+		if not self.error or self.advance_count == 0:
+			self.error = _error
 		return self
 
 ########################################
@@ -392,20 +397,24 @@ class Parser:
 		var tok = self.current_tok
 		
 		if tok.type in [TT_INT, TT_FLOAT]:
-			res.register(self.advance())
+			res.register_advancement()
+			self.advance()
 			return res.success(NumberNode.new(tok))
 			
 		elif tok.type == TT_IDENTIFIER:
-			res.register(self.advance())
+			res.register_advancement()
+			self.advance()
 			return res.success(VarAccessNode.new(tok))
 			
 		elif tok.type == TT_LPAREN:
-			res.register(self.advance())
+			res.register_advancement()
+			self.advance()
 			var expr = res.register(self.expr())
 			if res.error:
 				return res
 			if self.current_tok.type == TT_RPAREN:
-				res.register(self.advance())
+				res.register_advancement()
+				self.advance()
 				return res.success(expr)
 			else:
 				return res.failure(InvalidSyntaxError.new(tok.pos_start, 
@@ -423,7 +432,8 @@ class Parser:
 		var tok = self.current_tok
 		
 		if tok.type in [TT_PLUS, TT_MINUS]:
-			res.register(self.advance())
+			res.register_advancement()
+			self.advance()
 			var factor = res.register(self.factor())
 			if res.error: 
 				return res
@@ -440,7 +450,8 @@ class Parser:
 	func expr():
 		var res = ParseResult.new()
 		if self.current_tok.matches(TT_KEYWORD, 'VAR'):
-			res.register(self.advance())
+			res.register_advancement()
+			self.advance()
 			
 			if self.current_tok.type != TT_IDENTIFIER:
 				return res.failure(InvalidSyntaxError.new(
@@ -449,7 +460,8 @@ class Parser:
 				))
 			
 			var var_name = self.current_tok
-			res.register(self.advance())
+			res.register_advancement()
+			self.advance()
 			
 			if self.current_tok.type != TT_EQ:
 				return res.failure(InvalidSyntaxError.new(
@@ -457,13 +469,21 @@ class Parser:
 					"", "Expected ="
 				))
 			
-			res.register(self.advance())
+			res.register_advancement()
+			self.advance()
 			var expr = res.register(self.expr())
 			if res.error:
 				return res
 			return res.success(VarAssignNode.new(var_name, expr))
 			
-		return self.bin_op("term", [TT_PLUS, TT_MINUS])
+		var node = res.register(self.bin_op("term", [TT_PLUS, TT_MINUS]))
+		if res.error:
+			return res.failure(InvalidSyntaxError.new(
+				self.current_tok.pos_start, self.current_tok.pos_end,
+				"", "Expected 'VAR', int, float, identifier, '+', '-' or '('"
+				))
+		
+		return res.success(node)
 		
 	func bin_op(function, ops):
 		var res = ParseResult.new()
@@ -474,7 +494,8 @@ class Parser:
 		while self.current_tok.type in ops:
 			var op_tok = self.current_tok
 			
-			res.register(self.advance())
+			res.register_advancement()
+			self.advance()
 			var right = res.register(self.call(function))
 			if res.error: return res
 			left = BinOpNode.new(left, op_tok,right)
@@ -556,6 +577,12 @@ class Number:
 		if other is Number:
 			return [Number.new(pow(self.value, other.value)).set_context(self.context), null]
 
+	func copy():
+		var copy = Number.new(self.value)
+		copy.set_pos(self.pos_start, self.pos_end)
+		copy.set_context(self.context)
+		return copy
+		
 	func as_string():
 		return str(self.value)
 
@@ -635,6 +662,8 @@ class Interpreter:
 				node.pos_start, node.pos_end,
 				"", "'" + str(var_name) + "' is not defined", context
 			))
+		
+		value = value.copy().set_pos(node.pos_start, node.pos_end)
 		return res.success(value)
 		
 	func visit_VarAssignNode(node, context):
