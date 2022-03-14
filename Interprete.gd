@@ -38,7 +38,11 @@ class Error:
 class IllegalCharError extends Error:
 	func _init(_pos_start, _pos_end, _error_name, _details).(_pos_start, _pos_end, _error_name,_details):
 		._init(_pos_start, _pos_end, 'Illegal Character',_details)
-		
+
+#Error usado cuando escribimos ! pero no !=
+class ExpectedCharError extends Error:
+	func _init(_pos_start, _pos_end, _error_name, _details).(_pos_start, _pos_end, _error_name,_details):
+		._init(_pos_start, _pos_end, 'Expected Character',_details)
 
 class InvalidSyntaxError extends Error:
 	func _init(_pos_start, _pos_end, _error_name, _details).(_pos_start, _pos_end, _error_name,_details):
@@ -116,10 +120,19 @@ const TT_POW         = 'POW'
 const TT_EQ          = 'EQ'
 const TT_LPAREN      = 'LPAREN'
 const TT_RPAREN      = 'RPAREN'
+const TT_EE             = 'EE'
+const TT_NE             = 'NE'
+const TT_LT             = 'LT'
+const TT_GT             = 'GT'
+const TT_LTE            = 'LTE'
+const TT_GTE            = 'GTE'
 const TT_EOF         = 'EOF'
 
 const KEYWORDS = [
-	'VAR'
+	'VAR',
+	'AND',
+	'OR',
+	'NOT'
 ]
 
 class Token:
@@ -192,18 +205,27 @@ class Lexer:
 			elif self.current_char == '/':
 				tokens.append(Token.new(TT_DIV,null, self.pos))
 				self.advance()
+			elif self.current_char == '^':
+				tokens.append(Token.new(TT_POW, null, self.pos))
+				self.advance()
 			elif self.current_char == '(':
 				tokens.append(Token.new(TT_LPAREN,null, self.pos))
 				self.advance()
 			elif self.current_char == ')':
 				tokens.append(Token.new(TT_RPAREN,null, self.pos))
 				self.advance()
-			elif self.current_char == '^':
-				tokens.append(Token.new(TT_POW, null, self.pos))
-				self.advance()
+			elif self.current_char == "!":
+				var tok
+				var error
+				[tok,error] = self.make_not_equals()
+				if error: return [[], error]
+				tokens.append(tok)
 			elif self.current_char == '=':
-				tokens.append(Token.new(TT_EQ, null, self.pos))
-				self.advance()
+				tokens.append(self.make_equals())
+			elif self.current_char == '<':
+				tokens.append(self.make_less_than())
+			elif self.current_char == '>':
+				tokens.append(self.make_greater_than())
 			else:
 				var pos_start = self.pos.copy()
 				var chara = self.current_char
@@ -246,6 +268,50 @@ class Lexer:
 		else:
 			tok_type = TT_IDENTIFIER
 		return Token.new(tok_type, id_str, pos_start, self.pos)
+		
+	func make_not_equals():
+		var pos_start = self.pos.copy()
+		self.advance()
+		
+		if self.current_char == '=':
+			self.advance()
+			return [Token.new(TT_NE, null, pos_start, self.pos), null]
+		
+		self.advance()
+		return [null, ExpectedCharError.new(pos_start,self.pos, "", "'=' (after '!')")]
+		
+	func make_equals():
+		var tok_type = TT_EQ
+		var pos_start = self.pos.copy()
+		self.advance()
+		
+		if self.current_char == '=':
+			self.advance()
+			tok_type = TT_EE
+		
+		return [Token.new(tok_type, null, pos_start, self.pos), null]
+		
+	func make_less_than():
+		var tok_type = TT_LT
+		var pos_start = self.pos.copy()
+		self.advance()
+		
+		if self.current_char == '=':
+			self.advance()
+			tok_type = TT_LTE
+		
+		return [Token.new(tok_type, null, pos_start, self.pos), null]
+	
+	func make_greater_than():
+		var tok_type = TT_GT
+		var pos_start = self.pos.copy()
+		self.advance()
+		
+		if self.current_char == '=':
+			self.advance()
+			tok_type = TT_GTE
+		
+		return [Token.new(tok_type, null, pos_start, self.pos), null]
 
 ########################################
 # NODES
@@ -425,7 +491,7 @@ class Parser:
 			tok.pos_end,"", "int, float, '+', '-' or '('"))
 
 	func power():
-		return self.bin_op("atom", [TT_POW])
+		return self.bin_op("atom", [TT_POW], "factor")
 	
 	func factor():
 		var res = ParseResult.new()
@@ -446,6 +512,31 @@ class Parser:
 	
 	func term():
 		return self.bin_op("factor", [TT_MUL, TT_DIV])
+		
+	func arith_expr():
+		return self.bin_op("term", [TT_PLUS, TT_MINUS])
+		
+	
+	func comp_expr():
+		var res = ParseResult.new()
+		var node
+		if self.current_tok.matches(TT_KEYWORD, 'NOT'):
+			var op_tok = self.current_tok
+			res.register_advancement()
+			self.advance()
+			
+			node = res.register(self.comp_expr())
+			if res.error: return res
+			return res.success(UnaryOpNode.new(op_tok, node))
+		
+		node = res.register(self.bin_op("arith_expr", [TT_EE, TT_NE, TT_LT, TT_GT, TT_LTE, TT_GTE] ))
+		
+		if res.error:
+			return res.failure(InvalidSyntaxError.new(self.current_tok.pos_start, 
+				self.current_tok.pos_end,"", "int, float, '+', '-', '(', 'NOT'"
+				))
+		
+		return res.success(node)
 	
 	func expr():
 		var res = ParseResult.new()
@@ -476,7 +567,7 @@ class Parser:
 				return res
 			return res.success(VarAssignNode.new(var_name, expr))
 			
-		var node = res.register(self.bin_op("term", [TT_PLUS, TT_MINUS]))
+		var node = res.register(self.bin_op("comp_expr", [[TT_KEYWORD, "AND"], [TT_KEYWORD, "OR"]]))
 		if res.error:
 			return res.failure(InvalidSyntaxError.new(
 				self.current_tok.pos_start, self.current_tok.pos_end,
@@ -485,20 +576,36 @@ class Parser:
 		
 		return res.success(node)
 		
-	func bin_op(function, ops):
+	func bin_op(function_a, ops, function_b = null):
+		if function_b == null:
+			function_b = function_a
+			
 		var res = ParseResult.new()
-		var left = res.register(self.call(function))
+		var left = res.register(self.call(function_a))
 		if res.error: 
 			return res
 		
-		while self.current_tok.type in ops:
+		#Arreglar, la información tiene que venir de la misma manera, no en dos formatos
+		var siguiente_token = false
+		if ops is Array:
+			siguiente_token = [self.current_tok.type, self.current_tok.value]
+		else:
+			siguiente_token = self.current_tok.type
+			
+		while siguiente_token in ops:
 			var op_tok = self.current_tok
 			
 			res.register_advancement()
 			self.advance()
-			var right = res.register(self.call(function))
+			var right = res.register(self.call(function_b))
 			if res.error: return res
 			left = BinOpNode.new(left, op_tok,right)
+			#Arreglar, la información tiene que venir de la misma manera, no en dos formatos
+			siguiente_token = false
+			if ops is Array:
+				siguiente_token = [self.current_tok.type, self.current_tok.value]
+			else:
+				siguiente_token = self.current_tok.type
 		
 		return res.success(left)
 		
@@ -576,6 +683,38 @@ class Number:
 	func powed_by(other):
 		if other is Number:
 			return [Number.new(pow(self.value, other.value)).set_context(self.context), null]
+			
+	func get_comparison_eq(other):
+		if other is Number:
+			return [Number.new(int(self.value == other.value)).set_context(self.context), null]
+	
+	func get_comparison_ne(other):
+		if other is Number:
+			return [Number.new(int(self.value != other.value)).set_context(self.context), null]
+	
+	func get_comparison_lt(other):
+		if other is Number:
+			return [Number.new(int(self.value < other.value)).set_context(self.context), null]
+			
+	func get_comparison_gt(other):
+		if other is Number:
+			return [Number.new(int(self.value > other.value)).set_context(self.context), null]
+	
+	func get_comparison_lte(other):
+		if other is Number:
+			return [Number.new(int(self.value <= other.value)).set_context(self.context), null]
+	
+	func get_comparison_gte(other):
+		if other is Number:
+			return [Number.new(int(self.value >= other.value)).set_context(self.context), null]
+	
+	func anded_by(other):
+		if other is Number:
+			return [Number.new(int(self.value and other.value)).set_context(self.context), null]
+			
+	func ored_by(other):
+		if other is Number:
+			return [Number.new(int(self.value or other.value)).set_context(self.context), null]
 
 	func copy():
 		var copy = Number.new(self.value)
@@ -688,16 +827,32 @@ class Interpreter:
 		
 		if node.op_tok.type == TT_PLUS:
 			result_error_list = left.added_to(right)
-		if node.op_tok.type == TT_MINUS:
+		elif node.op_tok.type == TT_MINUS:
 			result_error_list = left.subbed_by(right)
-		if node.op_tok.type == TT_MUL:
+		elif node.op_tok.type == TT_MUL:
 			result_error_list = left.multed_by(right)
-		if node.op_tok.type == TT_DIV:
+		elif node.op_tok.type == TT_DIV:
 			result_error_list = left.dived_by(right)
-		if node.op_tok.type == TT_POW:
+		elif node.op_tok.type == TT_POW:
 			result_error_list = left.powed_by(right)
-		
-		if result_error_list[1]:
+		elif node.op_tok.type == TT_EE:
+			result_error_list = left.get_comparison_eq(right)
+		elif node.op_tok.type == TT_NE:
+			result_error_list = left.get_comparison_ne(right)
+		elif node.op_tok.type == TT_LT:
+			result_error_list = left.get_comparison_lt(right)
+		elif node.op_tok.type == TT_GT:
+			result_error_list = left.get_comparison_gt(right)
+		elif node.op_tok.type == TT_LTE:
+			result_error_list = left.get_comparison_lte(right)
+		elif node.op_tok.type == TT_GTE:
+			result_error_list = left.get_comparison_gte(right)
+		elif node.op_tok.matches(TT_KEYWORD, 'AND'):
+			result_error_list = left.anded_by(right)
+		elif node.op_tok.matches(TT_KEYWORD, 'OR'):
+			result_error_list = left.ored_by(right)
+			
+		elif result_error_list[1]:
 			return res.failure(result_error_list[1])
 		else:
 			return res.success(result_error_list[0].set_pos(node.pos_start, node.pos_end))
