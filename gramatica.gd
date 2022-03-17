@@ -17,3 +17,8 @@ extends Node
 
 #atom       : INT|FLOAT|IDENTIFIER
 #           : LPAREN expr RPAREN
+#			: if-expr
+
+#if-expr	: KEYWORD:IF expr KEYWORD:THEN expr
+#			  (KEYWORD:ELIF expr KEYWORD:THEN expr)*
+#			  (KEYWORD:ELSE expr)?

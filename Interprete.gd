@@ -3,7 +3,9 @@ extends Node
 var global_symbol_table = SymbolTable.new()
 
 func _ready():
-	global_symbol_table.set("null", Number.new(0))
+	global_symbol_table.set("NULL", Number.new(0))
+	global_symbol_table.set("TRUE", Number.new(1))
+	global_symbol_table.set("FALSE", Number.new(0))
 
 
 #################################
@@ -132,7 +134,12 @@ const KEYWORDS = [
 	'VAR',
 	'AND',
 	'OR',
-	'NOT'
+	'NOT',
+	'IF',
+	'THEN',
+	'ELIF',
+	'THEN',
+	'ELSE'
 ]
 
 class Token:
@@ -289,7 +296,8 @@ class Lexer:
 			self.advance()
 			tok_type = TT_EE
 		
-		return [Token.new(tok_type, null, pos_start, self.pos), null]
+		return Token.new(tok_type, null, pos_start, self.pos)
+#		return [Token.new(tok_type, null, pos_start, self.pos), null]
 		
 	func make_less_than():
 		var tok_type = TT_LT
@@ -300,7 +308,8 @@ class Lexer:
 			self.advance()
 			tok_type = TT_LTE
 		
-		return [Token.new(tok_type, null, pos_start, self.pos), null]
+		return Token.new(tok_type, null, pos_start, self.pos)
+#		return [Token.new(tok_type, null, pos_start, self.pos), null]
 	
 	func make_greater_than():
 		var tok_type = TT_GT
@@ -311,7 +320,8 @@ class Lexer:
 			self.advance()
 			tok_type = TT_GTE
 		
-		return [Token.new(tok_type, null, pos_start, self.pos), null]
+		return Token.new(tok_type, null, pos_start, self.pos)
+#		return [Token.new(tok_type, null, pos_start, self.pos), null]
 
 ########################################
 # NODES
@@ -394,7 +404,21 @@ class UnaryOpNode:
 	func _to_string():
 		return "(" + str(self.op_tok) + ", " + str(self.node) + ")"
 		
-
+class IfNode:
+	var cases
+	var else_case
+	var pos_start
+	var pos_end
+	var type = "IfNode"
+	
+	func _init(_cases, _else_case):
+		self.cases = _cases
+		self.else_case = _else_case
+		self.pos_start = self.cases[0][0].pos_start
+		if self.else_case:
+			self.pos_end = self.else_case.pos_end
+		else:
+			self.pos_end =  self.cases[len(self.cases)-1][0].pos_end
 		
 ########################################
 # PARSE RESULT
@@ -456,6 +480,7 @@ class Parser:
 		if not res.error and self.current_tok.type != TT_EOF:
 			return res.failure(InvalidSyntaxError.new(self.current_tok.pos_start,
 					self.current_tok.pos_end, "", "Expected '+', '-', '*', '/' or '^'"))
+		
 		return res
 		
 	func atom():
@@ -486,6 +511,11 @@ class Parser:
 				return res.failure(InvalidSyntaxError.new(tok.pos_start, 
 			tok.pos_end,"", "Expected )"))
 		
+		elif tok.matches(TT_KEYWORD, 'IF'):
+			var result_if_expr = res.register(self.if_expr())
+			if res.error: 
+				return res
+			return res.success(result_if_expr)
 		
 		return res.failure(InvalidSyntaxError.new(tok.pos_start, 
 			tok.pos_end,"", "int, float, '+', '-' or '('"))
@@ -504,9 +534,7 @@ class Parser:
 			if res.error: 
 				return res
 			return res.success(UnaryOpNode.new(tok, factor))
-		
-		
-				
+			
 		return self.power()
 	
 	
@@ -538,6 +566,66 @@ class Parser:
 		
 		return res.success(node)
 	
+	func if_expr():
+		var res = ParseResult.new()
+		var cases = []
+		var else_case = null
+		
+		if not self.current_tok.matches(TT_KEYWORD, 'IF'):
+			return res.failure(InvalidSyntaxError.new(
+				self.current_tok.pos_start, self.current_tok.pos_end,
+				"", "Expected 'IF'"
+			))
+		
+		res.register_advancement()
+		self.advance()
+		
+		var condition = res.register(self.expr())
+		if res.error: return res
+		
+		if not self.current_tok.matches(TT_KEYWORD, 'THEN'):
+			return res.failure(InvalidSyntaxError.new(
+				self.current_tok.pos_start, self.current_tok.pos_end,
+				"", "Expected 'THEN'"
+			))
+		
+		res.register_advancement()
+		self.advance()
+		
+		var expr = res.register(self.expr())
+		if res.error: return res
+		cases.append([condition, expr])
+		
+		while self.current_tok.matches(TT_KEYWORD, 'ELIF'):
+			res.register_advancement()
+			self.advance()
+			
+			condition = res.register(self.expr())
+			if res.error: return res
+			
+			if not self.current_tok.matches(TT_KEYWORD, 'THEN'):
+				return res.failure(InvalidSyntaxError.new(
+				self.current_tok.pos_start, self.current_tok.pos_end,
+				"", "Expected 'THEN'"
+				))
+			
+			res.register_advancement()
+			self.advance()
+			
+			expr = res.register(self.expr())
+			if res.error: return res
+			cases.append([condition, expr])
+		
+		if self.current_tok.matches(TT_KEYWORD, 'ELSE'):
+			res.register_advancement()
+			self.advance()
+			
+			expr = res.register(self.expr())
+			if res.error: return res
+			else_case = expr
+		return res.success(IfNode.new(cases, else_case))
+			
+		
 	func expr():
 		var res = ParseResult.new()
 		if self.current_tok.matches(TT_KEYWORD, 'VAR'):
@@ -586,13 +674,19 @@ class Parser:
 			return res
 		
 		#Arreglar, la información tiene que venir de la misma manera, no en dos formatos
-		var siguiente_token = false
-		if ops is Array:
-			siguiente_token = [self.current_tok.type, self.current_tok.value]
+		var siguiente_token
+		print(ops[0], ops[0] is Array)
+		print(self.current_tok)
+		if self.current_tok is Array:
+#			siguiente_token = [self.current_tok, self.current_tok.value]
+			siguiente_token = [self.current_tok[0], self.current_tok[1]]
+			
 		else:
 			siguiente_token = self.current_tok.type
-			
+		
 		while siguiente_token in ops:
+			print(siguiente_token, ops)
+			print(siguiente_token in ops)
 			var op_tok = self.current_tok
 			
 			res.register_advancement()
@@ -602,7 +696,7 @@ class Parser:
 			left = BinOpNode.new(left, op_tok,right)
 			#Arreglar, la información tiene que venir de la misma manera, no en dos formatos
 			siguiente_token = false
-			if ops is Array:
+			if ops[0] is Array:
 				siguiente_token = [self.current_tok.type, self.current_tok.value]
 			else:
 				siguiente_token = self.current_tok.type
@@ -715,12 +809,24 @@ class Number:
 	func ored_by(other):
 		if other is Number:
 			return [Number.new(int(self.value or other.value)).set_context(self.context), null]
+	
+	func notted():
+		var resultado
+		if self.value == 0:
+			resultado = 1
+		else:
+			resultado = 0
 
+		return [Number.new(resultado).set_context(self.context), null]
+		
 	func copy():
 		var copy = Number.new(self.value)
 		copy.set_pos(self.pos_start, self.pos_end)
 		copy.set_context(self.context)
 		return copy
+		
+	func is_true():
+		return self.value != 0
 		
 	func as_string():
 		return str(self.value)
@@ -854,25 +960,51 @@ class Interpreter:
 			
 		elif result_error_list[1]:
 			return res.failure(result_error_list[1])
-		else:
-			return res.success(result_error_list[0].set_pos(node.pos_start, node.pos_end))
+		return res.success(result_error_list[0].set_pos(node.pos_start, node.pos_end))
 		
 	func visit_UnaryOpNode(node, _context):
 		var res = RTResult.new()
 		var number = res.register(self.visit(node.node, _context))
+		var number_error_list
 		if res.error: return res
 		
 		var error = null
 		
 		if node.op_tok.type == TT_MINUS:
-			[number, error] = number.multed_by(Number.new(-1))
+			number_error_list = number.multed_by(Number.new(-1))
+		elif node.op_tok.matches(TT_KEYWORD, 'NOT'):
+			number_error_list = number.notted()
+		number = number_error_list[0]
+		error = number_error_list[1]
 		
 		if error:
 			return res.failure(error)
 		else:
 			return res.success(number.set_pos(node.pos_start, node.pos_end))
 		
+	
+	func visit_IfNode(node, _context):
+		var res = RTResult.new()
+		var condition
+		var expr
 		
+		for condition_expr_list in node.cases:
+			condition = condition_expr_list[0]
+			expr = condition_expr_list[1]
+			var condition_value = res.register(self.visit(condition, _context))
+			if res.error: return res
+			
+			if condition_value.is_true():
+				var expr_value = res.register(self.visit(expr, _context))
+				if res.error: return res
+				return res.success(expr_value)
+		
+		if node.else_case:
+			var else_value = res.register(self.visit(node.else_case, _context))
+			if res.error: return res
+			return res.success(else_value)
+			
+		return res.success(null)
 		
 ########################################
 # RUN
