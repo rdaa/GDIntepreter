@@ -139,7 +139,11 @@ const KEYWORDS = [
 	'THEN',
 	'ELIF',
 	'THEN',
-	'ELSE'
+	'ELSE',
+	'FOR',
+	'TO',
+	'STEP',
+	'WHILE'
 ]
 
 class Token:
@@ -420,6 +424,38 @@ class IfNode:
 		else:
 			self.pos_end =  self.cases[len(self.cases)-1][0].pos_end
 		
+class ForNode:
+	var var_name_tok
+	var start_value_node
+	var end_value_node
+	var step_value_node
+	var body_node
+	var pos_start
+	var pos_end
+	var type = "ForNode"
+	func _init(_var_name_tok, _start_value_node, _end_value_node, _step_value_node, _body_node):
+		self.var_name_tok = _var_name_tok
+		self.start_value_node = _start_value_node
+		self.end_value_node = _end_value_node
+		self.step_value_node = _step_value_node
+		self.body_node = _body_node
+		
+		self.pos_start = self.var_name_tok.pos_start
+		self.pos_end = self.body_node.pos_end
+	
+class WhileNode:
+	var condition_node
+	var body_node
+	var pos_start
+	var pos_end
+	var type = "WhileNode"
+	
+	func _init(_condition_node, _body_node):
+		self.condition_node = _condition_node
+		self.body_node = _body_node
+		
+		self.pos_start = self.condition_node.pos_start
+		self.pos_end = self.body_node.pos_end
 ########################################
 # PARSE RESULT
 ########################################
@@ -517,6 +553,18 @@ class Parser:
 				return res
 			return res.success(result_if_expr)
 		
+		elif tok.matches(TT_KEYWORD, 'FOR'):
+			var result_for_expr = res.register(self.for_expr())
+			if res.error: 
+				return res
+			return res.success(result_for_expr)
+			
+		elif tok.matches(TT_KEYWORD, 'WHILE'):
+			var result_while_expr = res.register(self.while_expr())
+			if res.error: 
+				return res
+			return res.success(result_while_expr)
+			
 		return res.failure(InvalidSyntaxError.new(tok.pos_start, 
 			tok.pos_end,"", "int, float, '+', '-' or '('"))
 
@@ -624,6 +672,112 @@ class Parser:
 			if res.error: return res
 			else_case = expr
 		return res.success(IfNode.new(cases, else_case))
+			
+	func for_expr():
+		var res = ParseResult.new()
+		var var_name
+		var start_value
+		var end_value
+		var step_value
+		var body
+		
+		if not self.current_tok.matches(TT_KEYWORD,'FOR'):
+			return res.failure(InvalidSyntaxError.new(
+				self.current_tok.pos_start, self.current_tok.pos_end,
+				"", "Expected 'FOR'"
+			))
+		
+		res.register_advancement()
+		self.advance()
+		
+		if self.current_tok.type != TT_IDENTIFIER:
+			return res.failure(InvalidSyntaxError.new(
+				self.current_tok.pos_start, self.current_tok.pos_end,
+				"", "Expected identifier"
+			))
+		
+		var_name = self.current_tok
+		res.register_advancement()
+		self.advance()
+		
+		if self.current_tok.type != TT_EQ:
+			return res.failure(InvalidSyntaxError.new(
+				self.current_tok.pos_start, self.current_tok.pos_end,
+				"", "Expected '='"
+			))
+		
+		res.register_advancement()
+		self.advance()
+		
+		start_value = res.register(self.expr())
+		if res.error: return res
+		
+		if not self.current_tok.matches(TT_KEYWORD, 'TO'):
+			return res.failure(InvalidSyntaxError.new(
+				self.current_tok.pos_start, self.current_tok.pos_end,
+				"", "Expected 'TO'"
+			))
+		
+		res.register_advancement()
+		self.advance()
+		
+		end_value = res.register(self.expr())
+		if res.error: return res
+		
+		if self.current_tok.matches(TT_KEYWORD, 'STEP'):
+			res.register_advancement()
+			self.advance()
+			
+			step_value = res.register(self.expr())
+			if res.error: return res
+		else:
+			step_value = null
+		
+		if not self.current_tok.matches(TT_KEYWORD, 'THEN'):
+			return res.failure(InvalidSyntaxError.new(
+				self.current_tok.pos_start, self.current_tok.pos_end,
+				"", "Expected 'THEN'"
+			))
+		
+		res.register_advancement()
+		self.advance()
+		
+		body = res.register(self.expr())
+		if res.error: return res
+		
+		return res.success(ForNode.new(var_name, start_value, end_value, step_value, body))
+	
+	
+	func while_expr():
+		var res = ParseResult.new()
+		var condition
+		var body
+		
+		if not self.current_tok.matches(TT_KEYWORD, 'WHILE'):
+			return res.failure(InvalidSyntaxError.new(
+				self.current_tok.pos_start, self.current_tok.pos_end,
+				"", "Expected 'WHILE'"
+			))
+		
+		res.register_advancement()
+		self.advance()
+		
+		condition = res.register(self.expr())
+		if res.error: return res
+		
+		if not self.current_tok.matches(TT_KEYWORD, 'THEN'):
+			return res.failure(InvalidSyntaxError.new(
+				self.current_tok.pos_start, self.current_tok.pos_end,
+				"", "Expected 'THEN'"
+			))
+		
+		res.register_advancement()
+		self.advance()
+		
+		body = res.register(self.expr())
+		if res.error: return res
+		
+		return res.success(WhileNode.new(condition,body))
 			
 		
 	func expr():
@@ -1005,6 +1159,71 @@ class Interpreter:
 			return res.success(else_value)
 			
 		return res.success(null)
+		
+		
+	func visit_ForNode(node, _context):
+		var res = RTResult.new()
+		var start_value
+		var end_value
+		var step_value
+		var i
+		var condicion#eliminar si convierto a lambda
+		
+		start_value = res.register(self.visit(node.start_value_node, _context))
+		if res.error: return res
+		
+		end_value = res.register(self.visit(node.end_value_node, _context))
+		if res.error: return res
+		
+		if node.step_value_node:
+			step_value = res.register(self.visit(node.step_value_node, _context))
+			if res.error: return res
+		else:
+			step_value = Number.new(1)
+		
+		i = start_value.value
+		
+		#usar lambda condicion() en un futuro
+		if step_value.value >= 0:
+			condicion = i < end_value.value
+		else:
+			condicion = i > end_value.value
+		while condicion:
+			#Actualizamos el valor del iterador en la tabla de simbolos
+			_context.symbol_table.set(node.var_name_tok.value, Number.new(i))
+			i += step_value.value
+			
+			#Ejecutamos el cuerpo
+			res.register(self.visit(node.body_node, _context))
+			if res.error: return res
+			
+			#usar lambda condicion() en un futuro
+			if step_value.value >= 0:
+				condicion = i < end_value.value
+			else:
+				condicion = i > end_value.value
+		
+		#el return es un null, ya que los resultados se han realizado en el cuerpo
+		return res.success(null)
+		
+		
+	func visit_WhileNode(node, _context):
+		var res = RTResult.new()
+		var condition
+		
+		while true:
+			condition = res.register(self.visit(node.condition_node, _context))
+			if res.error: return res
+			
+			if not condition.is_true(): break
+			
+			res.register(self.visit(node.body_node, _context))
+			if res.error: return res
+		
+		#el return es un null, ya que los resultados se han realizado en el cuerpo
+		return res.success(null)
+		
+		
 		
 ########################################
 # RUN
