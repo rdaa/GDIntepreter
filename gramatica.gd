@@ -13,11 +13,16 @@ extends Node
 #factor     : (PLUS|MINUS) factor
 #           : power
 
-#power      : atom (POW factor)*
+#power      : llamar (POW factor)*
+
+#llamar		: atom (LPAREN  (expr (COMMA expr)*)? RPAREN)?
 
 #atom       : INT|FLOAT|IDENTIFIER
 #           : LPAREN expr RPAREN
 #			: if-expr
+#			: for-expr
+#			: while-expr
+#			: func-def
 
 #if-expr	: KEYWORD:IF expr KEYWORD:THEN expr
 #			  (KEYWORD:ELIF expr KEYWORD:THEN expr)*
@@ -27,3 +32,7 @@ extends Node
 #			  (KEYWORD:STEP expr)? KEYWORD:THEN expr
 
 #while-expr	: KEYWORD:WHILE expr KEYWORD:THEN expr
+
+#func-def	: KEYWORD:FUNC IDENTIFIER?
+#			  LPAREN (IDENTIFIER (COMMA IDENTIFIER)*)? RPAREN
+#			  ARROW expr

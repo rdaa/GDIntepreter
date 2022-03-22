@@ -128,6 +128,8 @@ const TT_LT             = 'LT'
 const TT_GT             = 'GT'
 const TT_LTE            = 'LTE'
 const TT_GTE            = 'GTE'
+const TT_COMMA          = 'COMMA'
+const TT_ARROW          = 'ARROW'
 const TT_EOF         = 'EOF'
 
 const KEYWORDS = [
@@ -143,7 +145,8 @@ const KEYWORDS = [
 	'FOR',
 	'TO',
 	'STEP',
-	'WHILE'
+	'WHILE',
+	'FUNC'
 ]
 
 class Token:
@@ -208,8 +211,8 @@ class Lexer:
 				tokens.append(Token.new(TT_PLUS,null, self.pos))
 				self.advance()
 			elif self.current_char == '-':
-				tokens.append(Token.new(TT_MINUS,null, self.pos))
-				self.advance()
+				#Puede ser un simbolo menos o el inicio de la flecha
+				tokens.append(self.make_minus_or_arrow())
 			elif self.current_char == '*':
 				tokens.append(Token.new(TT_MUL,null, self.pos))
 				self.advance()
@@ -237,6 +240,10 @@ class Lexer:
 				tokens.append(self.make_less_than())
 			elif self.current_char == '>':
 				tokens.append(self.make_greater_than())
+			elif self.current_char == ',':
+				tokens.append(Token.new(TT_COMMA,null, self.pos))
+				self.advance()
+			
 			else:
 				var pos_start = self.pos.copy()
 				var chara = self.current_char
@@ -280,6 +287,17 @@ class Lexer:
 			tok_type = TT_IDENTIFIER
 		return Token.new(tok_type, id_str, pos_start, self.pos)
 		
+	func make_minus_or_arrow():
+		var tok_type =  TT_MINUS
+		var pos_start = self.pos.copy()
+		self.advance()
+		
+		if self.current_char == '>':
+			self.advance()
+			tok_type = TT_ARROW
+		
+		return Token.new(tok_type, null, pos_start, self.pos)
+	
 	func make_not_equals():
 		var pos_start = self.pos.copy()
 		self.advance()
@@ -456,6 +474,53 @@ class WhileNode:
 		
 		self.pos_start = self.condition_node.pos_start
 		self.pos_end = self.body_node.pos_end
+		
+		
+class FuncDefNode:
+	var var_name_tok
+	var arg_name_toks
+	var body_node
+	var pos_start
+	var pos_end
+	var type = "FuncDefNode"
+	
+	func _init(_var_name_tok, _arg_name_toks, _body_node):
+		self.var_name_tok = _var_name_tok
+		self.arg_name_toks = _arg_name_toks
+		self.body_node = _body_node
+		
+		if self.var_name_tok:
+			self.pos_start = self.var_name_tok.pos_start
+		elif len(self.arg_name_toks) > 0:
+			self.pos_start = self.arg_name_toks[0].pos_start
+		else:
+			self.pos_start = self.body_node.pos_start
+		
+		self.pos_end = self.body_node.pos_end
+
+class CallNode:
+	var node_to_call
+	var arg_nodes
+	var pos_start
+	var pos_end
+	var type = "CallNode"
+	
+	func _init(_node_to_call, _arg_nodes):
+		self.node_to_call = _node_to_call
+		self.arg_nodes = _arg_nodes
+		
+		self.pos_start = self.node_to_call.pos_start
+		
+		if len(self.arg_nodes) > 0:
+			self.pos_end = self.arg_nodes[len(self.arg_nodes) - 1].pos_end
+		else:
+			self.pos_end = self.node_to_call.pos_end
+		
+		
+	
+	
+	
+	
 ########################################
 # PARSE RESULT
 ########################################
@@ -518,7 +583,44 @@ class Parser:
 					self.current_tok.pos_end, "", "Expected '+', '-', '*', '/' or '^'"))
 		
 		return res
+	
+	func llamar():
+		var res = ParseResult.new()
+		var atom = res.register(self.atom())
+		var arg_nodes = []
 		
+		if res.error: return res
+		
+		if self.current_tok.type == TT_LPAREN:
+			res.register_advancement()
+			self.advance()
+			arg_nodes = []
+			
+			if self.current_tok.type == TT_RPAREN:
+				res.register_advancement()
+				self.advance()
+			else:
+				arg_nodes.append(res.register(self.expr()))
+				if res.error: 
+					return res.failure(InvalidSyntaxError.new(self.current_tok.pos_start, 
+						self.current_tok.pos_end,"",
+						 "Expected ')', 'VAR', 'IF', 'FOR', 'WHILE', 'FUNC', int, float, '+', '-', '(', 'NOT'"
+					))
+				
+				while self.current_tok.type == TT_COMMA:
+					res.register_advancement()
+					self.advance()
+					
+					arg_nodes.append(res.register(self.expr()))
+					if res.error: return res
+				
+				res.register_advancement()
+				self.advance()
+			return res.success(CallNode.new(atom,arg_nodes))
+		return res.success(atom)
+				
+		
+	
 	func atom():
 		var res = ParseResult.new()
 		var tok = self.current_tok
@@ -564,12 +666,18 @@ class Parser:
 			if res.error: 
 				return res
 			return res.success(result_while_expr)
-			
+		
+		elif tok.matches(TT_KEYWORD, 'FUNC'):
+			var result_func_def = res.register(self.func_def())
+			if res.error: 
+				return res
+			return res.success(result_func_def)
+		
 		return res.failure(InvalidSyntaxError.new(tok.pos_start, 
 			tok.pos_end,"", "int, float, '+', '-' or '('"))
 
 	func power():
-		return self.bin_op("atom", [TT_POW], "factor")
+		return self.bin_op("llamar", [TT_POW], "factor")
 	
 	func factor():
 		var res = ParseResult.new()
@@ -818,6 +926,96 @@ class Parser:
 		
 		return res.success(node)
 		
+	func func_def():
+		var res = ParseResult.new()
+		var var_name_tok
+		var arg_name_toks
+		var node_to_return
+		
+		if not self.current_tok.matches(TT_KEYWORD, 'FUNC'):
+			return res.failure(InvalidSyntaxError.new(
+				self.current_tok.pos_start, self.current_tok.pos_end,
+				"", "Expected 'FUNC'"
+			))
+		
+		res.register_advancement()
+		self.advance()
+		
+		#si la funcion tiene un nombre...
+		if self.current_tok.type == TT_IDENTIFIER:
+			var_name_tok = self.current_tok
+			res.register_advancement()
+			self.advance()
+			if self.current_tok.type != TT_LPAREN:
+				return res.failure(InvalidSyntaxError.new(
+					self.current_tok.pos_start, self.current_tok.pos_end,
+					"", "Expected '('"
+				))
+		else:
+			var_name_tok = null
+			if self.current_tok.type != TT_LPAREN:
+				return res.failure(InvalidSyntaxError.new(
+					self.current_tok.pos_start, self.current_tok.pos_end,
+					"", "Expected identifier or '('"
+				))
+		
+		res.register_advancement()
+		self.advance()
+		arg_name_toks = []
+		
+		if self.current_tok.type == TT_IDENTIFIER:
+			arg_name_toks.append(self.current_tok)
+			res.register_advancement()
+			self.advance()
+			
+			while self.current_tok.type == TT_COMMA:
+				res.register_advancement()
+				self.advance()
+				
+				if self.current_tok.type != TT_IDENTIFIER:
+					return res.failure(InvalidSyntaxError.new(
+						self.current_tok.pos_start, self.current_tok.pos_end,
+						"", "Expected identifier"
+					))
+				
+				arg_name_toks.append(self.current_tok)
+				res.register_advancement()
+				self.advance()
+			
+			if self.current_tok.type != TT_RPAREN:
+				return res.failure(InvalidSyntaxError.new(
+					self.current_tok.pos_start, self.current_tok.pos_end,
+					"", "Se esperaba ',' o ')'"
+				))
+		#si no nos encontramos un identificador (variable) entre los parentesis
+		else:
+			if self.current_tok.type != TT_RPAREN:
+				return res.failure(InvalidSyntaxError.new(
+					self.current_tok.pos_start, self.current_tok.pos_end,
+					"", "Se esperaba identificador o ')'"
+				))
+		
+		res.register_advancement()
+		self.advance()
+		
+		if self.current_tok.type != TT_ARROW:
+			return res.failure(InvalidSyntaxError.new(
+				self.current_tok.pos_start, self.current_tok.pos_end,
+				"", "Expected '->'"
+			))
+		
+		res.register_advancement()
+		self.advance()
+		node_to_return = res.register(self.expr())
+		if res.error: return res
+		
+		return res.success(FuncDefNode.new(
+			var_name_tok,
+			arg_name_toks,
+			node_to_return
+		))
+		
+		
 	func bin_op(function_a, ops, function_b = null):
 		if function_b == null:
 			function_b = function_a
@@ -887,6 +1085,83 @@ class RTResult:
 # VALUES
 ########################################
 
+class Value:
+	var pos_start
+	var pos_end
+	var context
+	
+	func _init():
+		self.set_pos()
+		self.set_context()
+		
+	func set_pos(_pos_start = null, _pos_end = null):
+		self.pos_start = _pos_start
+		self.pos_end = _pos_end
+		return self
+		
+	func set_context(_context = null):
+		self.context = _context
+		return self
+	
+	func added_to(other):
+		return [null, self.illegal_operation(other)]
+	
+	func subbed_by(other):
+		return [null, self.illegal_operation(other)]
+	
+	func multed_by(other):
+		return [null, self.illegal_operation(other)]
+	
+	func dived_by(other):
+		return [null, self.illegal_operation(other)]
+	
+	func powed_by(other):
+		return [null, self.illegal_operation(other)]
+			
+	func get_comparison_eq(other):
+		return [null, self.illegal_operation(other)]
+	
+	func get_comparison_ne(other):
+		return [null, self.illegal_operation(other)]
+	
+	func get_comparison_lt(other):
+		return [null, self.illegal_operation(other)]
+			
+	func get_comparison_gt(other):
+		return [null, self.illegal_operation(other)]
+	
+	func get_comparison_lte(other):
+		return [null, self.illegal_operation(other)]
+	
+	func get_comparison_gte(other):
+		return [null, self.illegal_operation(other)]
+	
+	func anded_by(other):
+		return [null, self.illegal_operation(other)]
+			
+	func ored_by(other):
+		return [null, self.illegal_operation(other)]
+	
+	func notted():
+		return [null, self.illegal_operation()]
+	
+	func execute(args):
+		return [null, self.illegal_operation()]
+	func copy():
+		assert('No copy method defined')
+	
+	func is_true():
+		return false
+		
+	func illegal_operation(other = null):
+		if not other: other = self
+		return RTError.new(
+			self.pos_start, other.pos_end,
+			'', 'Illegal operation',
+			self.context
+		)
+		
+		
 class Number:
 	var value
 	var pos_start
