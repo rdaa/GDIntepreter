@@ -921,7 +921,7 @@ class Parser:
 		if res.error:
 			return res.failure(InvalidSyntaxError.new(
 				self.current_tok.pos_start, self.current_tok.pos_end,
-				"", "Expected 'VAR', int, float, identifier, '+', '-' or '('"
+				"", "Expected 'VAR', 'IF','FOR','WHILE','FUNC', int, float, identifier, '+', '-' or '('"
 				))
 		
 		return res.success(node)
@@ -1162,11 +1162,11 @@ class Value:
 		)
 		
 		
-class Number:
+class Number extends Value:
 	var value
-	var pos_start
-	var pos_end
-	var context
+#	var pos_start
+#	var pos_end
+#	var context
 	
 	func _init(_value):
 		self.value = _value
@@ -1185,14 +1185,22 @@ class Number:
 	func added_to(other):
 		if other is Number:
 			return [Number.new(self.value + other.value).set_context(self.context), null]
+		else:
+			return [null, Value.illegal_operation(self.pos_start, other.pos_end)]
 	
 	func subbed_by(other):
 		if other is Number:
 			return [Number.new(self.value - other.value).set_context(self.context), null]
+		else:
+			return [null, Value.illegal_operation(self.pos_start, other.pos_end)]
+	
+	
 	
 	func multed_by(other):
 		if other is Number:
 			return [Number.new(self.value * other.value).set_context(self.context), null]
+		else:
+			return [null, Value.illegal_operation(self.pos_start, other.pos_end)]
 	
 	func dived_by(other):
 		if other is Number:
@@ -1202,43 +1210,63 @@ class Number:
 					self.context
 				)]
 			return [Number.new(self.value / other.value).set_context(self.context), null]
+		else:
+			return [null, Value.illegal_operation(self.pos_start, other.pos_end)]
 	
 	func powed_by(other):
 		if other is Number:
 			return [Number.new(pow(self.value, other.value)).set_context(self.context), null]
+		else:
+			return [null, Value.illegal_operation(self.pos_start, other.pos_end)]
 			
 	func get_comparison_eq(other):
 		if other is Number:
 			return [Number.new(int(self.value == other.value)).set_context(self.context), null]
-	
+		else:
+			return [null, Value.illegal_operation(self.pos_start, other.pos_end)]
+			
 	func get_comparison_ne(other):
 		if other is Number:
 			return [Number.new(int(self.value != other.value)).set_context(self.context), null]
-	
+		else:
+			return [null, Value.illegal_operation(self.pos_start, other.pos_end)]
+			
 	func get_comparison_lt(other):
 		if other is Number:
 			return [Number.new(int(self.value < other.value)).set_context(self.context), null]
+		else:
+			return [null, Value.illegal_operation(self.pos_start, other.pos_end)]
 			
 	func get_comparison_gt(other):
 		if other is Number:
 			return [Number.new(int(self.value > other.value)).set_context(self.context), null]
-	
+		else:
+			return [null, Value.illegal_operation(self.pos_start, other.pos_end)]
+		
 	func get_comparison_lte(other):
 		if other is Number:
 			return [Number.new(int(self.value <= other.value)).set_context(self.context), null]
-	
+		else:
+			return [null, Value.illegal_operation(self.pos_start, other.pos_end)]
+		
 	func get_comparison_gte(other):
 		if other is Number:
 			return [Number.new(int(self.value >= other.value)).set_context(self.context), null]
-	
+		else:
+			return [null, Value.illegal_operation(self.pos_start, other.pos_end)]
+		
 	func anded_by(other):
 		if other is Number:
 			return [Number.new(int(self.value and other.value)).set_context(self.context), null]
+		else:
+			return [null, Value.illegal_operation(self.pos_start, other.pos_end)]
 			
 	func ored_by(other):
 		if other is Number:
 			return [Number.new(int(self.value or other.value)).set_context(self.context), null]
-	
+		else:
+			return [null, Value.illegal_operation(self.pos_start, other.pos_end)]
+		
 	func notted():
 		var resultado
 		if self.value == 0:
@@ -1259,6 +1287,61 @@ class Number:
 		
 	func as_string():
 		return str(self.value)
+
+class Function extends Value:
+	var name
+	var body_node
+	var arg_names
+	
+	func _init(_name, _body_node, _arg_names):
+		._init()
+		if not _name:
+			self.name = "<anonymous>"
+		else:
+			self.name = _name
+		
+		self.body_node = _body_node
+		self.arg_names = _arg_names
+
+	func execute(args):
+		var res = RTResult.new()
+		var interpreter = Interpreter.new()
+		var new_context = Context.new(self.name, self.context, self.pos_start)
+		new_context.symbol_table = SymbolTable.new(new_context.parent.symbol_table)
+		
+		if len(args) > len(self.arg_names):
+			return res.failure(RTError.new(
+				self.pos_start, self.pos_end, "",
+				str(len(args)) +" - "+str(len(self.arg_names))+" too many args passed into "+str(self.name),
+				self.context
+			))
+		
+		if len(args) < len(self.arg_names):
+			return res.failure(RTError.new(
+				self.pos_start, self.pos_end, "",
+				str(len(self.arg_names)) +" - "+str(len(args))+" too few args passed into "+str(self.name),
+				self.context
+			))
+
+		for i in range(len(args)):
+			var arg_name = self.arg_names[i]
+			var arg_value = args[i]
+			arg_value.set_context(new_context)
+			new_context.symbol_table.set(arg_name, arg_value)
+
+		var value = res.register(interpreter.visit(self.body_node, new_context))
+		if res.error: return res
+		return res.success(value)
+		
+	func copy():
+		var copy = Function.new(self.name, self.body_node, self.arg_names)
+		copy.set_context(self.context)
+		copy.set_pos(self.pos_start, self.pos_end)
+		return copy
+	
+	func as_string():
+		return "<function " + str(self.name) + ">"
+		
 
 ########################################
 # CONTEXT
@@ -1283,8 +1366,8 @@ class Context:
 class SymbolTable:
 	var symbols = {}
 	var parent
-	func _init():
-		parent = null
+	func _init(_parent = null):
+		self.parent = _parent
 	
 	#Buscamos la variable en la tabla, si no la encontramos la buscamos
 	#en el padre (La tabla no tiene padre)
@@ -1498,8 +1581,39 @@ class Interpreter:
 		#el return es un null, ya que los resultados se han realizado en el cuerpo
 		return res.success(null)
 		
+	func visit_FuncDefNode(node, context):
+		var res = RTResult.new()
+		var func_name = null
+		if node.var_name_tok:
+			func_name = node.var_name_tok.value
+		var body_name = node.body_node
+		var arg_names = []
+		for arg_name in node.arg_name_toks:
+			arg_names.append(arg_name)
 		
+		var func_value = Function.new(func_name, body_name, arg_names).set_context(context).set_pos(node.pos_start, node.pos_end)
 		
+		if node.var_name_tok:
+			context.symbol_table.set(func_name, func_value)
+		
+		return res.success(func_value)
+	
+	func visit_CallNode(node, context):
+		var res = RTResult.new()
+		var args = []
+		
+		var value_to_call = res.register(self.visit(node.node_to_call, context))
+		if res.error: return res
+		value_to_call = value_to_call.copy().set_pos(node.pos_start, node.pos_end)
+		
+		for arg_node in node.arg_nodes:
+			args.append(res.register(self.visit(arg_node, context)))
+			if res.error: return res
+		
+		var return_value = res.register(value_to_call.execute(args))
+		if res.error: return res
+		return res.success(return_value)
+
 ########################################
 # RUN
 ########################################
